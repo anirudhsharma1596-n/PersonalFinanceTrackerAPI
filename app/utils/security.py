@@ -1,44 +1,53 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from app.config import settings
+import hashlib
+import base64
+import bcrypt
 
 # CryptContext configures which hashing algorithm to use
 # bcrypt is the industry standard for passwords — deliberately slow
 # "deliberately slow" is a feature, not a bug — makes brute force attacks
 # take years instead of seconds
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+def _prepare_password(plain_password: str) -> bytes:
+    """
+    Pre-hash with SHA-256 to eliminate bcrypt's 72 byte limit.
+    Returns bytes — bcrypt works with bytes natively.
+    """
+    password_bytes = plain_password.encode("utf-8")
+    sha256_hash = hashlib.sha256(password_bytes).digest()
+    return base64.b64encode(sha256_hash)
 
 # ── Password functions ─────────────────────────────────────────
 
 def hash_password(plain_password: str) -> str:
     """
-    Convert a plain text password to a bcrypt hash.
-
-    "mypassword123" → "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36..."
-
-    The hash includes:
-    - The algorithm ($2b$)
-    - The work factor ($12$ — how many rounds of hashing)
-    - A random salt (prevents rainbow table attacks)
-    - The actual hash
-
-    All of this is stored in one string — passlib handles it automatically.
+    Hash a password using bcrypt directly.
+    Returns a string for storage in PostgreSQL.
     """
-    return pwd_context.hash(plain_password)
+    prepared = _prepare_password(plain_password)
+
+    # bcrypt.hashpw needs bytes input and a salt
+    # gensalt() generates a random salt with work factor 12 by default
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(prepared, salt)
+
+    # decode to string for database storage
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Check if a plain password matches a stored hash.
-    Returns True if match, False if not.
-
-    We never "decrypt" the hash — we hash the input again
-    and compare. That's how one-way hashing works.
+    Verify a plain password against a bcrypt hash.
+    Returns True if match, False otherwise.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    prepared = _prepare_password(plain_password)
+
+    # bcrypt.checkpw handles the comparison safely
+    # it's timing-attack resistant unlike plain == comparison
+    return bcrypt.checkpw(prepared, hashed_password.encode("utf-8"))
 
 
 # ── JWT functions ──────────────────────────────────────────────
